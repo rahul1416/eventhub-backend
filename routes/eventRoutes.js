@@ -1,71 +1,108 @@
 const express = require('express');
 const { ObjectId } = require('mongodb');
+const router = express.Router();
 
-module.exports = (db) => {
-  const router = express.Router();
+const getEventsCollection = (db) => db.collection('events');
 
-  // Helper function to get the 'events' collection
-  const getEventsCollection = () => db.collection('events');
-
-  // Create a new event
-  router.post('/', async (req, res) => {
-    try {
-      const event = req.body;
-      const result = await getEventsCollection().insertOne(event); 
-      res.status(201).json(result.ops[0]); 
-    } catch (err) {
-      res.status(400).json({ error: err.message });
-    }
-  });
-
+const validateEventData = (req, res, next) => {
+  const { title, startTime, endTime, eventType } = req.body;
   
-  router.get('/', async (req, res) => {
-    try {
-      const events = await getEventsCollection().find().toArray(); // Retrieve all events
-      res.json(events);
-    } catch (err) {
-      console.log("Error retrieving events:", err);
-      res.status(500).json({ error: err.message });
-    }
-  });
-
+  if (!title || !startTime || !endTime || !eventType) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
   
-  router.get('/:id', async (req, res) => {
-    try {
-      const event = await getEventsCollection().findOne({ _id: ObjectId(req.params.id) }); // Find event by ID
-      if (!event) return res.status(404).json({ error: 'Event not found' });
-      res.json(event);
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
+  if (new Date(startTime) >= new Date(endTime)) {
+    return res.status(400).json({ error: 'End time must be after start time' });
+  }
   
-  router.put('/:id', async (req, res) => {
-    try {
-      const updated = await getEventsCollection().findOneAndUpdate(
-        { _id: ObjectId(req.params.id) },
-        { $set: req.body },
-        { returnOriginal: false }
-      );
-      res.json(updated.value); // Return updated event
-    } catch (err) {
-      res.status(400).json({ error: err.message });
-    }
-  });
-
-  
-  router.delete('/:id', async (req, res) => {
-    try {
-      const result = await getEventsCollection().deleteOne({ _id: ObjectId(req.params.id) }); // Delete event by ID
-      if (result.deletedCount === 0) {
-        return res.status(404).json({ error: 'Event not found' });
-      }
-      res.json({ message: 'Event deleted' });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  return router;
+  next();
 };
+
+
+router.post('/', validateEventData, async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    const event = {
+      ...req.body,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      status: req.body.status || 'upcoming'
+    };
+    const result = await getEventsCollection(db).insertOne(event);
+    const createdEvent = await getEventsCollection(db).findOne({ _id: result.insertedId });
+    res.status(201).json(createdEvent);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.get('/', async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    const { status, eventType } = req.query;
+    const query = {};
+    
+    if (status) query.status = status;
+    if (eventType) query.eventType = eventType;
+    
+    const events = await getEventsCollection(db)
+      .find(query)
+      .sort({ startTime: 1 })
+      .toArray();
+    res.json(events);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/:id', async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid event ID' });
+    }
+    const event = await getEventsCollection(db).findOne({ _id: new ObjectId(req.params.id) });
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+    res.json(event);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/:id', validateEventData, async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid event ID' });
+    }
+    const updateData = {
+      ...req.body,
+      updatedAt: new Date()
+    };
+    const result = await getEventsCollection(db).findOneAndUpdate(
+      { _id: new ObjectId(req.params.id) },
+      { $set: updateData },
+      { returnDocument: 'after' }
+    );
+    if (!result.value) return res.status(404).json({ error: 'Event not found' });
+    res.json(result.value);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid event ID' });
+    }
+    const result = await getEventsCollection(db).deleteOne({ _id: new ObjectId(req.params.id) });
+    if (result.deletedCount === 0) return res.status(404).json({ error: 'Event not found' });
+    res.json({ message: 'Event deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+module.exports = router;
